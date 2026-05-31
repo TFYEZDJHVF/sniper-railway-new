@@ -40,14 +40,20 @@ async function drainQueue() {
 app.post("/webhook", (req, res) => {
   res.status(200).json({ ok: true }); // respond immediately
 
-  const secret = process.env.HELIUS_WEBHOOK_SECRET;
-  if (secret && req.headers["authorization"] !== `Bearer ${secret}`) {
-    log.warn("Unauthorized webhook call");
-    return;
-  }
+// ── Webhook — HOT PATH ────────────────────────────────────────
+app.post("/webhook", (req, res) => {
+  // ALWAYS respond immediately to Helius
+  res.status(200).json({ ok: true });
+
+  // DEBUG (optional but useful)
+  log.info("WEBHOOK RECEIVED");
 
   const txs = Array.isArray(req.body) ? req.body : [req.body];
-  for (const tx of txs) processTx(tx);
+
+  // Process async (do NOT block Helius)
+  for (const tx of txs) {
+    processTx(tx);
+  }
 });
 
 // ── Setup ─────────────────────────────────────────────────────
