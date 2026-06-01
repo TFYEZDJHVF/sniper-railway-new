@@ -1,14 +1,14 @@
 import express        from "express";
-import { createLogger }                                          from "./lib/logger.js";
-import { parseNativeTransfers, detectPumpFunLaunch }            from "./lib/tracker.js";
+import { createLogger }                                              from "./lib/logger.js";
+import { parseNativeTransfers, detectPumpFunLaunch }                from "./lib/tracker.js";
 import { initWatchedWallets, getWatchedWallets, addWallet,
          removeWallet, getActiveChains, registerTransfer,
-         getChainForWallet, markChainSniped }                   from "./lib/chainState.js";
-import { isWalletActive }                                       from "./lib/walletStatus.js";
-import { passesFilter }                                         from "./lib/solFilter.js";
-import { upsertWebhook, addWalletsToWebhook }                   from "./lib/helius.js";
-import { initTelegramBot }                                      from "./lib/telegram.js";
-import { send }                                                 from "./outputs/tradewiz.js";
+         getChainForWallet, markChainSniped, resetChainSnipe }      from "./lib/chainState.js";
+import { isWalletActive }                                           from "./lib/walletStatus.js";
+import { passesFilter }                                             from "./lib/solFilter.js";
+import { upsertWebhook, addWalletsToWebhook }                       from "./lib/helius.js";
+import { initTelegramBot }                                          from "./lib/telegram.js";
+import { send }                                                     from "./outputs/tradewiz.js";
 
 const log  = createLogger("main");
 const app  = express();
@@ -38,7 +38,7 @@ async function drainQueue() {
 
 // ── Webhook — HOT PATH ────────────────────────────────────────
 app.post("/webhook", (req, res) => {
-  res.status(200).json({ ok: true }); // respond immediately
+  res.status(200).json({ ok: true });
 
   const secret = process.env.HELIUS_WEBHOOK_SECRET;
   if (secret && req.headers["authorization"] !== `Bearer ${secret}`) {
@@ -78,16 +78,23 @@ async function processTx(tx) {
         if (!isWalletActive(chain.rootWallet)) return;
         const latencyMs = Date.now() - t0;
         log.info("🚨 LAUNCH", { mint: launch.mint, hops: chain.hops.length, latencyMs });
+
+        // Mark sniped to avoid double snipe
         markChainSniped(chain.rootWallet);
-        pushSignal({ mint: launch.mint, dex: launch.dex, solAmount: launch.solAmount, chain, launch, latencyMs });
+
+        // Send signal
+        pushSignal({ mint: launch.mint, dex: launch.dex, solAmount: launch.solAmount, chain: { ...chain, hops: [...chain.hops] }, launch, latencyMs });
+
+        // Reset snipe flag after 10s so chain can snipe again if new token launched
+        setTimeout(() => resetChainSnipe(chain.rootWallet), 10_000);
       }
       return;
     }
 
-    // Priority 2 — Track SOL transfers using SOL range filter
+    // Priority 2 — Track SOL transfers
     const transfers = parseNativeTransfers(tx);
     for (const transfer of transfers) {
-      if (!passesFilter(transfer.solAmount)) continue; // ← uses min/max range
+      if (!passesFilter(transfer.solAmount)) continue;
       if (!isWalletActive(transfer.from)) continue;
       const chain = registerTransfer(transfer);
       if (chain) {
